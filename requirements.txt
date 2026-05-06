@@ -1,0 +1,22 @@
+# Web framework (chatbot backend)
+fastapi
+uvicorn[standard]
+pydantic
+
+# LLM client (used against OpenRouter's OpenAI-compatible endpoint)
+openai
+
+# Fuzzy name matching for places / Wainwrights
+rapidfuzz
+
+# Routing: OSM-based shortest-path between accommodation and trailhead.
+# osmnx pulls in networkx, geopandas, shapely as transitive deps.
+osmnx
+networkx
+
+# Env var loading
+python-dotenv
+
+# Scraper dependencies
+requests
+beautifulsoup4
