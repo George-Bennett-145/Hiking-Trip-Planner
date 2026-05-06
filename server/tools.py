@@ -18,6 +18,7 @@ from typing import Optional
 from rapidfuzz import fuzz, process
 
 from server.data import load_accommodation, load_walks
+from server import routing as _routing
 
 
 # --------------------------------------------------------------------- helpers
@@ -83,7 +84,7 @@ def _walk_summary(walk: dict) -> dict:
     }
 
 
-def _accommodation_summary(entry: dict, distance_km: float) -> dict:
+def _accommodation_summary(entry: dict, distance_km: float, crow_flies_km: float) -> dict:
     return {
         "id": entry["osm_id"],
         "name": entry.get("name") or "Unnamed",
@@ -91,11 +92,19 @@ def _accommodation_summary(entry: dict, distance_km: float) -> dict:
         "lat": entry["lat"],
         "lon": entry["lon"],
         "distance_km": round(distance_km, 2),
+        "crow_flies_km": round(crow_flies_km, 2),
         "addr_street": entry.get("addr_street"),
         "addr_postcode": entry.get("addr_postcode"),
         "phone": entry.get("phone"),
         "website": entry.get("website"),
     }
+
+
+def _polyline_length_km(polyline: list[tuple[float, float]]) -> float:
+    return sum(
+        _haversine_km(polyline[i][0], polyline[i][1], polyline[i + 1][0], polyline[i + 1][1])
+        for i in range(len(polyline) - 1)
+    )
 
 
 # ------------------------------------------------------------------- the tools
@@ -212,23 +221,48 @@ def search_accommodation(
     radius_km: float = 10.0,
     types: Optional[list[str]] = None,
     limit: int = 15,
+    mode: str = "walking",
 ) -> list[dict]:
     """Find accommodation within `radius_km` of (near_lat, near_lon).
 
-    Returns up to `limit` entries sorted by distance ascending. `types`
-    filters by the OSM `tourism` tag (e.g. ["hotel", "guest_house",
-    "camp_site"]); pass None to include all types.
+    Phase 1: crow-flies filter to get candidates within the radius.
+    Phase 2: real OSMnx routing on the top candidates so that detours
+    (e.g. going around a lake) are reflected in the returned distances.
+    Results are sorted by routed distance, falling back to crow-flies if
+    routing fails for a particular entry.
+
+    `types` filters by the OSM `tourism` tag. `mode` selects the routing
+    network: 'walking' (default) or 'driving'.
     """
-    results: list[dict] = []
+    # Phase 1: crow-flies filter
+    candidates: list[tuple[float, dict]] = []
     for entry in load_accommodation():
         if entry.get("lat") is None or entry.get("lon") is None:
             continue
         if types and entry.get("tourism") not in types:
             continue
-        d = _haversine_km(near_lat, near_lon, entry["lat"], entry["lon"])
-        if d > radius_km:
+        d_crow = _haversine_km(near_lat, near_lon, entry["lat"], entry["lon"])
+        if d_crow > radius_km:
             continue
-        results.append(_accommodation_summary(entry, d))
+        candidates.append((d_crow, entry))
 
-    results.sort(key=lambda x: x["distance_km"])
-    return results[:limit]
+    candidates.sort(key=lambda x: x[0])
+
+    # Phase 2: real routing on the nearest candidates (capped to keep latency
+    # manageable; each query is ~20-50 ms on a warm graph).
+    MAX_ROUTE = max(limit * 3, 30)
+    results: list[tuple[float, dict]] = []
+    for crow_dist, entry in candidates[:MAX_ROUTE]:
+        try:
+            polyline = _routing.route_between(
+                entry["lat"], entry["lon"], near_lat, near_lon, mode=mode
+            )
+            routed_km = _polyline_length_km(polyline) if len(polyline) > 1 else crow_dist
+        except Exception:
+            routed_km = crow_dist  # routing unavailable, fall back to crow-flies
+
+        summary = _accommodation_summary(entry, routed_km, crow_dist)
+        results.append((routed_km, summary))
+
+    results.sort(key=lambda x: x[0])
+    return [r for _, r in results[:limit]]
