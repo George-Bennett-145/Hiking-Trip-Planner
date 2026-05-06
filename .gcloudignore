@@ -1,0 +1,38 @@
+# Files NOT to upload to Cloud Build. Critical: this file overrides .gitignore
+# during `gcloud run deploy --source`, so we must NOT exclude output/*.graphml
+# (which .gitignore does exclude) — those routing graphs are needed in the image.
+
+.gcloudignore
+.git/
+.gitignore
+
+# Local-only
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.env
+.env.example
+tests/
+.claude/
+.idea/
+.vscode/
+
+# Scrape intermediates, kept locally only
+output/cache/
+output/walks_listing.csv
+lake_district_all_accommodation.geojson
+
+# One-off / dev scripts
+Scraper.py
+fetch_accommodation.py
+fetch_all_places.py
+build_walking_graph.py
+build_driving_graph.py
+run.ps1
+
+# Docs and logs
+*.log
+*.docx
+*.md
+Dad_Routing
