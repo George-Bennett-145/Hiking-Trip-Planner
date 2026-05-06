@@ -95,9 +95,10 @@ def route_between(
     `mode` selects the underlying network: 'walking' uses footpaths and
     walkable roads, 'driving' uses drivable roads only.
 
-    Result is a list of (lat, lon) tuples following the chosen network.
-    The first and last entries are the snapped graph nodes, which may be
-    a short distance from the requested input points.
+    Result is a list of (lat, lon) tuples following the chosen network,
+    including intermediate road-curve points stored on OSM edges (not
+    just intersection nodes). The first and last entries are the snapped
+    graph nodes, which may be a short distance from the requested inputs.
 
     Raises FileNotFoundError if the graph cache for that mode is missing,
     and networkx.NetworkXNoPath if no route exists between the snapped
@@ -105,7 +106,29 @@ def route_between(
     """
     G = _get_graph(mode)
     node_ids = _node_ids_between(G, lat1, lon1, lat2, lon2)
-    return [(G.nodes[n]["y"], G.nodes[n]["x"]) for n in node_ids]
+
+    if len(node_ids) == 1:
+        n = node_ids[0]
+        return [(G.nodes[n]["y"], G.nodes[n]["x"])]
+
+    coords: list[tuple[float, float]] = []
+    for u, v in zip(node_ids[:-1], node_ids[1:]):
+        edge_data = min(G[u][v].values(), key=lambda d: d.get("length", 0))
+        geom = edge_data.get("geometry")
+        if geom is not None:
+            # Shapely LineString stores coords as (lon, lat); swap to (lat, lon).
+            pts: list[tuple[float, float]] = [(lat, lon) for lon, lat in geom.coords]
+        else:
+            pts = [
+                (G.nodes[u]["y"], G.nodes[u]["x"]),
+                (G.nodes[v]["y"], G.nodes[v]["x"]),
+            ]
+        # Drop the first point of each segment — it duplicates the last of the previous.
+        if coords:
+            pts = pts[1:]
+        coords.extend(pts)
+
+    return coords
 
 
 def route_highway_breakdown(
