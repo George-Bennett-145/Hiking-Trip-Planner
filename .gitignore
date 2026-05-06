@@ -1,0 +1,32 @@
+# Environment
+.env
+
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Routing graphs (large binary files, regenerate with build_walking_graph.py / build_driving_graph.py)
+output/*.graphml
+
+# Scraper cache and logs
+cache/
+*.log
+
+# Claude Code local settings (machine-specific)
+.claude/
+
+# Personal / scratch files
+Dad_Routing
+
+# Superseded / unused data files
+fetch_all_places.py
+lake_district_all_accommodation.geojson
+output/walks_listing.csv
+
+# OS
+.DS_Store
+Thumbs.db

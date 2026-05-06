@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Lake District Trip Planner</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        #map { height: 100vh; width: 100%; }
+
+        /* ---------- Chat panel ---------- */
+        .chat-panel {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            width: 340px;
+            height: 480px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+        }
+        .chat-header {
+            padding: 14px 16px;
+            border-bottom: 1px solid #eee;
+            font-weight: 600;
+            font-size: 15px;
+            color: #1a3d2e;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .chat-bubble {
+            padding: 9px 13px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.5;
+            max-width: 88%;
+            word-wrap: break-word;
+        }
+        .chat-bubble.user {
+            background: #1a3d2e;
+            color: white;
+            align-self: flex-end;
+            border-bottom-right-radius: 3px;
+        }
+        .chat-bubble.bot {
+            background: #f0f0eb;
+            color: #222;
+            align-self: flex-start;
+            border-bottom-left-radius: 3px;
+        }
+        .chat-input-row {
+            display: flex;
+            gap: 8px;
+            padding: 10px;
+            border-top: 1px solid #eee;
+        }
+        .chat-input-row input {
+            flex: 1;
+            padding: 8px 10px;
+            font-size: 13px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            outline: none;
+        }
+        .chat-input-row input:focus { border-color: #1a3d2e; }
+        .chat-input-row button {
+            padding: 8px 14px;
+            background: #1a3d2e;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .chat-input-row button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <div class="chat-panel">
+        <div class="chat-header">Lake District Trip Planner</div>
+        <div id="chat-messages" class="chat-messages">
+            <div class="chat-bubble bot">Hello. I can help you find a Lake District walk and somewhere to stay. What kind of walk are you after?</div>
+        </div>
+        <div class="chat-input-row">
+            <input type="text" id="chat-input" placeholder="Type a message..." autocomplete="off" />
+            <button id="chat-send">Send</button>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // ---------- Map setup ----------
+        const map = L.map('map').setView([54.5, -3.1], 10);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors',
+            maxZoom: 18,
+        }).addTo(map);
+
+        // ---------- LLM map layer (polling) ----------
+        //
+        // The LLM calls show_on_map, which writes walk_ids / accommodation_ids
+        // into the session state. We poll that state endpoint every 2 s and
+        // re-render this layer whenever the payload changes.
+        //
+        // NOTE: polling is fine for a single-instance deployment. For multi-
+        // instance Cloud Run, this should be replaced with SSE or WebSocket
+        // backed by a shared store (see server/state.py MapState comment).
+
+        let sessionId = null;
+        let _lastMapFingerprint = '';
+        const _llmTrailLayers = [];
+        const _llmAccomMarkers = [];
+
+        // Bumped on every render so stale async fetches from a previous
+        // render know to bail out before adding their layers to the map.
+        let _mapGen = 0;
+
+        // Pre-fetch all accommodation into a lookup dict so we can place markers
+        // instantly when the LLM suggests one, without loading them on the map upfront.
+        const _accommodationById = {};
+        fetch('/api/accommodation')
+            .then(res => res.json())
+            .then(data => { data.forEach(p => { _accommodationById[p.osm_id] = p; }); })
+            .catch(() => {});
+
+        function _buildAccomPopup(p) {
+            const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const lines = [`<strong>${esc(p.name || 'Unnamed')}</strong>`];
+            if (p.tourism) lines.push(esc(p.tourism.replace(/_/g, ' ')));
+            if (p.addr_street) lines.push(esc(p.addr_street));
+            if (p.addr_postcode) lines.push(esc(p.addr_postcode));
+            if (p.phone) lines.push(`Tel: ${esc(p.phone)}`);
+            if (p.website) lines.push(`<a href="${esc(p.website)}" target="_blank" rel="noopener noreferrer">Website</a>`);
+            return lines.join('<br>');
+        }
+
+        // Connector colour by transport mode. Trail itself stays blue.
+        const _CONNECTOR_STYLE = {
+            walking: { color: '#16a34a', weight: 3, opacity: 0.9, dashArray: '8, 6' },
+            driving: { color: '#dc2626', weight: 3, opacity: 0.9, dashArray: '8, 6' },
+        };
+        const _TRAIL_STYLE = { color: '#1d4ed8', weight: 4, opacity: 0.85 };
+
+        function _applyLlmMapState(mapState, transportMode) {
+            // Capture our generation. If a newer render starts before our
+            // async fetches resolve, we bail before adding stale layers.
+            const myGen = ++_mapGen;
+            const isStale = () => myGen !== _mapGen;
+
+            console.log('[map] applying state:', {
+                gen: myGen,
+                walk_ids: mapState.walk_ids,
+                accommodation_ids: mapState.accommodation_ids,
+                transport_mode: transportMode,
+            });
+            // Clear previous LLM layers
+            _llmTrailLayers.forEach(l => map.removeLayer(l));
+            _llmTrailLayers.length = 0;
+            _llmAccomMarkers.forEach(m => map.removeLayer(m));
+            _llmAccomMarkers.length = 0;
+
+            const bounds = L.latLngBounds();
+            let hasBounds = false;
+
+            // Accommodation markers render immediately from the pre-fetched dict
+            mapState.accommodation_ids.forEach(id => {
+                const p = _accommodationById[id];
+                if (!p || !p.lat || !p.lon) return;
+                const marker = L.circleMarker([p.lat, p.lon], {
+                    radius: 8,
+                    fillColor: '#f59e0b',
+                    color: '#fff',
+                    weight: 2,
+                    fillOpacity: 0.9,
+                }).bindPopup(_buildAccomPopup(p)).addTo(map);
+                _llmAccomMarkers.push(marker);
+                bounds.extend([p.lat, p.lon]);
+                hasBounds = true;
+            });
+
+            // Connector path: exactly one walk + one accommodation + a known
+            // transport_mode. Anything else falls back to the standalone GPX render.
+            const useConnector = (
+                mapState.walk_ids.length === 1
+                && mapState.accommodation_ids.length === 1
+                && (transportMode === 'walking' || transportMode === 'driving')
+            );
+
+            if (useConnector) {
+                const walkId = mapState.walk_ids[0];
+                const accomId = mapState.accommodation_ids[0];
+                const url = `/api/connector?walk_id=${walkId}`
+                    + `&accommodation_id=${encodeURIComponent(accomId)}`
+                    + `&mode=${transportMode}`;
+                console.log('[map] fetching connector:', url);
+                fetch(url)
+                    .then(async res => {
+                        if (!res.ok) {
+                            const body = await res.text();
+                            console.error('[map] connector fetch failed:', res.status, body);
+                            return null;
+                        }
+                        return res.json();
+                    })
+                    .catch(err => {
+                        console.error('[map] connector network error:', err);
+                        return null;
+                    })
+                    .then(data => {
+                        if (isStale()) return;
+                        if (!data) {
+                            console.warn('[map] no connector data, falling back to plain GPX');
+                            // Fallback so the user at least sees the trail
+                            fetch(`/api/walks/${mapState.walk_ids[0]}/gpx`)
+                                .then(r => r.ok ? r.json() : null)
+                                .then(geojson => {
+                                    if (isStale()) return;
+                                    if (!geojson) return;
+                                    const layer = L.geoJSON(geojson, { style: _TRAIL_STYLE }).addTo(map);
+                                    _llmTrailLayers.push(layer);
+                                    bounds.extend(layer.getBounds());
+                                    if (mapState.fit_bounds) map.fitBounds(bounds, { padding: [40, 40] });
+                                });
+                            return;
+                        }
+                        console.log('[map] connector ok:', data.connector_length_m, 'm connector,',
+                                    data.trail_length_m, 'm trail');
+                        const trailLayer = L.geoJSON(data.trail, { style: _TRAIL_STYLE }).addTo(map);
+                        _llmTrailLayers.push(trailLayer);
+                        bounds.extend(trailLayer.getBounds());
+
+                        const connectorLayer = L.geoJSON(data.connector, {
+                            style: _CONNECTOR_STYLE[transportMode],
+                        }).addTo(map);
+                        _llmTrailLayers.push(connectorLayer);
+                        bounds.extend(connectorLayer.getBounds());
+
+                        if (mapState.fit_bounds) {
+                            map.fitBounds(bounds, { padding: [40, 40] });
+                        }
+                    });
+            } else if (mapState.walk_ids.length) {
+                console.log('[map] fallback GPX render for walks:', mapState.walk_ids,
+                            '(transport_mode is', transportMode, ')');
+                Promise.all(
+                    mapState.walk_ids.map(id =>
+                        fetch(`/api/walks/${id}/gpx`)
+                            .then(res => {
+                                if (!res.ok) {
+                                    console.error('[map] GPX fetch failed for walk', id, 'status', res.status);
+                                    return null;
+                                }
+                                return res.json();
+                            })
+                            .catch(err => {
+                                console.error('[map] GPX network error for walk', id, err);
+                                return null;
+                            })
+                    )
+                ).then(geojsons => {
+                    if (isStale()) return;
+                    geojsons.forEach(geojson => {
+                        if (!geojson) return;
+                        const layer = L.geoJSON(geojson, { style: _TRAIL_STYLE }).addTo(map);
+                        _llmTrailLayers.push(layer);
+                        bounds.extend(layer.getBounds());
+                        hasBounds = true;
+                    });
+                    if (mapState.fit_bounds && hasBounds) {
+                        map.fitBounds(bounds, { padding: [40, 40] });
+                    }
+                });
+            } else if (mapState.fit_bounds && hasBounds) {
+                map.fitBounds(bounds, { padding: [40, 40] });
+            }
+        }
+
+        function _pollMapState() {
+            const sid = sessionId || window._debugSession;
+            if (!sid) return;
+            fetch(`/api/sessions/${sid}/state`)
+                .then(res => res.json())
+                .then(state => {
+                    const m = state.map;
+                    const transportMode = state.logistics?.transport_mode || null;
+                    const fingerprint = JSON.stringify(m.walk_ids)
+                        + '|' + JSON.stringify(m.accommodation_ids)
+                        + '|' + (transportMode || '');
+                    if (fingerprint === _lastMapFingerprint) return;
+                    _lastMapFingerprint = fingerprint;
+                    _applyLlmMapState(m, transportMode);
+                })
+                .catch(err => console.warn('Map poll failed:', err));
+        }
+
+        setInterval(_pollMapState, 2000);
+
+        // ---------- Chat ----------
+
+        const chatMessages = document.getElementById('chat-messages');
+        const chatInput = document.getElementById('chat-input');
+        const chatSend = document.getElementById('chat-send');
+
+        // Tiny safe markdown renderer. Escapes HTML first, then converts
+        // **bold**, *italic*, `code`, and newlines. Handles nothing else by
+        // design — anything more elaborate is scope creep.
+        function renderMarkdown(text) {
+            const escaped = String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+            return escaped
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/(^|[^*])\*([^*\n]+?)\*(?!\*)/g, '$1<em>$2</em>')
+                .replace(/`([^`\n]+?)`/g, '<code>$1</code>')
+                .replace(/\n/g, '<br>');
+        }
+
+        function appendBubble(role, text) {
+            const div = document.createElement('div');
+            div.className = `chat-bubble ${role}`;
+            // Bot replies render markdown; user messages stay plain-text.
+            if (role === 'bot') {
+                div.innerHTML = renderMarkdown(text);
+            } else {
+                div.textContent = text;
+            }
+            chatMessages.appendChild(div);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        const TOOL_STATUS_LABELS = {
+            search_walks: 'Searching walks',
+            get_walk_details: 'Reading walk details',
+            search_accommodation: 'Looking up accommodation',
+            update_trip_state: 'Updating preferences',
+            get_trip_state: 'Checking what we have so far',
+            show_on_map: 'Updating the map',
+        };
+
+        function _renderStatus(toolName) {
+            const label = TOOL_STATUS_LABELS[toolName] || `Calling ${toolName}`;
+            return `<span style="color:#888;font-style:italic">${label}…</span>`;
+        }
+
+        async function sendMessage() {
+            const message = chatInput.value.trim();
+            if (!message) return;
+
+            chatInput.value = '';
+            chatSend.disabled = true;
+            appendBubble('user', message);
+
+            const loadingBubble = document.createElement('div');
+            loadingBubble.className = 'chat-bubble bot';
+            loadingBubble.innerHTML = '<span style="color:#888">…</span>';
+            chatMessages.appendChild(loadingBubble);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+
+            let accumulatedText = '';
+
+            try {
+                const body = { message };
+                if (sessionId) body.session_id = sessionId;
+
+                const res = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
+                });
+
+                if (!res.ok) {
+                    let detail = `Server error ${res.status}`;
+                    try {
+                        const errBody = await res.json();
+                        if (errBody && errBody.detail) detail = errBody.detail;
+                    } catch (_) { /* response wasn't JSON */ }
+                    throw new Error(detail);
+                }
+
+                // Read the SSE stream. Events are separated by blank lines (\n\n)
+                // and each event is a single "data: {json}" line.
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                outer: while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const blocks = buffer.split('\n\n');
+                    buffer = blocks.pop();
+
+                    for (const block of blocks) {
+                        if (!block.startsWith('data: ')) continue;
+                        const payload = block.slice(6).trim();
+                        if (!payload) continue;
+
+                        let event;
+                        try { event = JSON.parse(payload); }
+                        catch { continue; }
+
+                        if (event.type === 'session') {
+                            sessionId = event.session_id;
+                        } else if (event.type === 'tool_call') {
+                            // Only show status if we have not yet started streaming text.
+                            if (!accumulatedText) {
+                                loadingBubble.innerHTML = _renderStatus(event.name);
+                                chatMessages.scrollTop = chatMessages.scrollHeight;
+                            }
+                        } else if (event.type === 'text') {
+                            accumulatedText += event.delta;
+                            loadingBubble.innerHTML = renderMarkdown(accumulatedText);
+                            chatMessages.scrollTop = chatMessages.scrollHeight;
+                        } else if (event.type === 'done') {
+                            if (!accumulatedText) {
+                                loadingBubble.textContent = '(no reply received)';
+                            }
+                            break outer;
+                        } else if (event.type === 'error') {
+                            throw new Error(event.detail || 'unknown server error');
+                        }
+                    }
+                }
+            } catch (err) {
+                loadingBubble.textContent = `Sorry, something went wrong: ${err.message}`;
+                console.error('Chat error:', err);
+            } finally {
+                chatSend.disabled = false;
+                chatInput.focus();
+            }
+        }
+
+        chatSend.addEventListener('click', sendMessage);
+        chatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) sendMessage();
+        });
+    </script>
+</body>
+</html>

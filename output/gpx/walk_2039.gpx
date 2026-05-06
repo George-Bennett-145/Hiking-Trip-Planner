@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<gpx xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:gs="http://www.topografix.com/GPX/gpx_style/0/2" xmlns:gh="https://graphhopper.com/public/schema/gpx/1.1" xmlns:q="http://www.anquet.com" xmlns:os="https://ordnancesurvey.co.uk/public/schema/route/0.1" xsi:schemaLocation="http://www.topografix.com/GPX/1/1/gpx.xsd" version="1.1" creator="OSMaps" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>A circuit of Gowbarrow Fell, Ullswater</name>
+    <bounds minlat="54.5752352" minlon="-2.9349646" maxlat="54.5899783" maxlon="-2.9078720" />
+  </metadata>
+  <rte>
+    <name>A circuit of Gowbarrow Fell, Ullswater</name>
+    <desc>A circuit of Gowbarrow Fell, Ullswater </desc>
+	<author>Copyright Walking Britain</author>
+	<url>www.walkingbritain.co.uk/walk-2039-description</url>
+	<urlname>Walk - A circuit of Gowbarrow Fell, Ullswater</urlname>
+      
+    <rtept lat="54.5814011" lon="-2.9344789">
+      <ele>275.8</ele>
+    </rtept>
+    <rtept lat="54.581401" lon="-2.934479">
+      <ele>275.8</ele>
+    </rtept>
+    <rtept lat="54.581323" lon="-2.93435">
+      <ele>272.4</ele>
+    </rtept>
+    <rtept lat="54.58143" lon="-2.93322">
+      <ele>263.9</ele>
+    </rtept>
+    <rtept lat="54.581448" lon="-2.932313">
+      <ele>263.6</ele>
+    </rtept>
+    <rtept lat="54.581457" lon="-2.931897">
+      <ele>257.2</ele>
+    </rtept>
+    <rtept lat="54.5814566" lon="-2.9318973">
+      <ele>257.2</ele>
+    </rtept>
+    <rtept lat="54.5810696" lon="-2.9300698">
+      <ele>231.8</ele>
+    </rtept>
+    <rtept lat="54.5800141" lon="-2.9300071">
+      <ele>232.1</ele>
+    </rtept>
+    <rtept lat="54.5793171" lon="-2.9300686">
+      <ele>230.4</ele>
+    </rtept>
+    <rtept lat="54.5792123" lon="-2.9290992">
+      <ele>222.6</ele>
+    </rtept>
+    <rtept lat="54.5795501" lon="-2.9289909">
+      <ele>239.2</ele>
+    </rtept>
+    <rtept lat="54.5801791" lon="-2.9290052">
+      <ele>244.8</ele>
+    </rtept>
+    <rtept lat="54.5812972" lon="-2.9296882">
+      <ele>249.5</ele>
+    </rtept>
+    <rtept lat="54.5824181" lon="-2.9300232">
+      <ele>245.1</ele>
+    </rtept>
+    <rtept lat="54.5836731" lon="-2.9304386">
+      <ele>268.6</ele>
+    </rtept>
+    <rtept lat="54.5850362" lon="-2.9313981">
+      <ele>279.3</ele>
+    </rtept>
+    <rtept lat="54.5856667" lon="-2.931219">
+      <ele>284.4</ele>
+    </rtept>
+    <rtept lat="54.5861025" lon="-2.9300684">
+      <ele>297.5</ele>
+    </rtept>
+    <rtept lat="54.5864983" lon="-2.9282592">
+      <ele>337.5</ele>
+    </rtept>
+    <rtept lat="54.5870511" lon="-2.9264922">
+      <ele>380.8</ele>
+    </rtept>
+    <rtept lat="54.5874495" lon="-2.9243349">
+      <ele>422.8</ele>
+    </rtept>
+    <rtept lat="54.5880463" lon="-2.9226848">
+      <ele>447</ele>
+    </rtept>
+    <rtept lat="54.5886891" lon="-2.9208811">
+      <ele>456.8</ele>
+    </rtept>
+    <rtept lat="54.5882371" lon="-2.9182788">
+      <ele>477.6</ele>
+    </rtept>
+    <rtept lat="54.5889414" lon="-2.9172501">
+      <ele>445.8</ele>
+    </rtept>
+    <rtept lat="54.5894298" lon="-2.9150559">
+      <ele>415.6</ele>
+    </rtept>
+    <rtept lat="54.5899381" lon="-2.9132102">
+      <ele>393.1</ele>
+    </rtept>
+    <rtept lat="54.5892994" lon="-2.9114936">
+      <ele>393.5</ele>
+    </rtept>
+    <rtept lat="54.5884618" lon="-2.9093471">
+      <ele>366.9</ele>
+    </rtept>
+    <rtept lat="54.5873946" lon="-2.9078533">
+      <ele>357.4</ele>
+    </rtept>
+    <rtept lat="54.5864064" lon="-2.9077926">
+      <ele>354.2</ele>
+    </rtept>
+    <rtept lat="54.5850332" lon="-2.9081489">
+      <ele>348.4</ele>
+    </rtept>
+    <rtept lat="54.5840165" lon="-2.9089">
+      <ele>355.8</ele>
+    </rtept>
+    <rtept lat="54.5830529" lon="-2.908569">
+      <ele>360</ele>
+    </rtept>
+    <rtept lat="54.5821949" lon="-2.9091302">
+      <ele>362.1</ele>
+    </rtept>
+    <rtept lat="54.5811146" lon="-2.9093769">
+      <ele>354.5</ele>
+    </rtept>
+    <rtept lat="54.5800783" lon="-2.9097406">
+      <ele>353.8</ele>
+    </rtept>
+    <rtept lat="54.5797175" lon="-2.9099259">
+      <ele>349.8</ele>
+    </rtept>
+    <rtept lat="54.5791838" lon="-2.9091791">
+      <ele>333.3</ele>
+    </rtept>
+    <rtept lat="54.5790569" lon="-2.908132">
+      <ele>328.7</ele>
+    </rtept>
+    <rtept lat="54.5778876" lon="-2.9082607">
+      <ele>319.3</ele>
+    </rtept>
+    <rtept lat="54.5773855" lon="-2.9092938">
+      <ele>311.6</ele>
+    </rtept>
+    <rtept lat="54.5775942" lon="-2.9114257">
+      <ele>301.4</ele>
+    </rtept>
+    <rtept lat="54.5777293" lon="-2.9143682">
+      <ele>305.5</ele>
+    </rtept>
+    <rtept lat="54.5771451" lon="-2.9173332">
+      <ele>293.5</ele>
+    </rtept>
+    <rtept lat="54.5764249" lon="-2.9204497">
+      <ele>271.3</ele>
+    </rtept>
+    <rtept lat="54.575548" lon="-2.9234853">
+      <ele>208.8</ele>
+    </rtept>
+    <rtept lat="54.575394" lon="-2.9259957">
+      <ele>210.4</ele>
+    </rtept>
+    <rtept lat="54.5752983" lon="-2.926767">
+      <ele>204.4</ele>
+    </rtept>
+    <rtept lat="54.5755583" lon="-2.9280105">
+      <ele>197.8</ele>
+    </rtept>
+    <rtept lat="54.5762219" lon="-2.9293792">
+      <ele>204.9</ele>
+    </rtept>
+    <rtept lat="54.5768854" lon="-2.930748">
+      <ele>203.3</ele>
+    </rtept>
+    <rtept lat="54.5775791" lon="-2.9311119">
+      <ele>217.3</ele>
+    </rtept>
+    <rtept lat="54.5784779" lon="-2.9310937">
+      <ele>232.5</ele>
+    </rtept>
+    <rtept lat="54.5793741" lon="-2.9314236">
+      <ele>248.7</ele>
+    </rtept>
+    <rtept lat="54.5800888" lon="-2.9319814">
+      <ele>250.1</ele>
+    </rtept>
+    <rtept lat="54.581133" lon="-2.9335138">
+      <ele>263.9</ele>
+    </rtept>
+    <rtept lat="54.5813004" lon="-2.9351035">
+      <ele>275.8</ele>
+    </rtept>
+  </rte>
+</gpx>
