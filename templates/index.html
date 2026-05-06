@@ -32,6 +32,23 @@
             font-weight: 600;
             font-size: 15px;
             color: #1a3d2e;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #reset-btn {
+            font-size: 12px;
+            font-weight: 500;
+            color: #888;
+            background: none;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 3px 8px;
+            cursor: pointer;
+        }
+        #reset-btn:hover {
+            color: #c0392b;
+            border-color: #c0392b;
         }
         .chat-messages {
             flex: 1;
@@ -93,9 +110,12 @@
     <div id="map"></div>
 
     <div class="chat-panel">
-        <div class="chat-header">Lake District Trip Planner</div>
+        <div class="chat-header">
+            <span>Lake District Trip Planner</span>
+            <button id="reset-btn">New conversation</button>
+        </div>
         <div id="chat-messages" class="chat-messages">
-            <div class="chat-bubble bot">Hello. I can help you find a Lake District walk and somewhere to stay. What kind of walk are you after?</div>
+            <div class="chat-bubble bot" id="initial-msg">Hello. I can help you find a Lake District walk and somewhere to stay. What kind of walk are you after?</div>
         </div>
         <div class="chat-input-row">
             <input type="text" id="chat-input" placeholder="Type a message..." autocomplete="off" />
@@ -300,6 +320,9 @@
                 .then(state => {
                     const m = state.map;
                     const transportMode = state.logistics?.transport_mode || null;
+                    // Ignore empty state - happens when the server restarts and
+                    // loses session memory. Don't clear a map that already has content.
+                    if (!m.walk_ids.length && !m.accommodation_ids.length) return;
                     const fingerprint = JSON.stringify(m.walk_ids)
                         + '|' + JSON.stringify(m.accommodation_ids)
                         + '|' + (transportMode || '');
@@ -311,6 +334,30 @@
         }
 
         setInterval(_pollMapState, 2000);
+
+        // ---------- Reset ----------
+
+        const INITIAL_BOT_MSG = 'Hello. I can help you find a Lake District walk and somewhere to stay. What kind of walk are you after?';
+
+        document.getElementById('reset-btn').addEventListener('click', () => {
+            // Clear map layers immediately.
+            _llmTrailLayers.forEach(l => map.removeLayer(l));
+            _llmTrailLayers.length = 0;
+            _llmAccomMarkers.forEach(m => map.removeLayer(m));
+            _llmAccomMarkers.length = 0;
+            _lastMapFingerprint = '';
+
+            // Reset session on the server if we have one.
+            if (sessionId) {
+                fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+            }
+            sessionId = null;
+
+            // Reset chat UI.
+            chatMessages.innerHTML = `<div class="chat-bubble bot">${INITIAL_BOT_MSG}</div>`;
+            chatInput.value = '';
+            chatInput.focus();
+        });
 
         // ---------- Chat ----------
 

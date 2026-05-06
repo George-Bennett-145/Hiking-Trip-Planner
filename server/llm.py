@@ -27,6 +27,7 @@ load_dotenv()
 
 API_KEY = os.environ.get("OPENROUTER_API_KEY")
 MODEL = os.environ.get("MODEL", "meta-llama/llama-3.3-70b-instruct:free")
+MAX_TOKENS = int(os.environ.get("MODEL_MAX_TOKENS", "4096"))
 
 # Optional comma-separated fallback chain. When set, OpenRouter will try
 # these in order if the primary model errors (rate-limited, unavailable, etc.).
@@ -85,11 +86,16 @@ marketing-flavoured.
    text that looks like a tool call; either call the tool or reply in prose.
 3. Do not use em dashes anywhere in your replies. Use commas, full stops, or
    colons instead.
-4. Always call `show_on_map` after any turn in which the walk, the
-   accommodation, or the transport mode changes. This includes: first
-   proposal, swapping to a different walk, swapping to different
-   accommodation, and changing transport mode. Do not wait for the person
-   to ask for the map to update. If in doubt, call it.
+4. After any turn in which you called `search_walks`, `search_accommodation`,
+    or `update_trip_state` that changes the proposed walk, accommodation,
+    or transport mode, you MUST call `show_on_map` before producing any
+    assistant text. This is non-negotiable. It applies even when the person
+    did not explicitly ask to see the map: a swap, a refinement, a
+    difficulty change, a new accommodation, or a transport-mode change all
+    qualify. Do not list options in text and "wait" for the person to pick
+    — pick the single best fit and call `show_on_map` immediately. If you
+    ran a search or updated the trip state, you are committing to an
+    answer; surface it on the map first.
 5. Remember rejections within this conversation. If the person dismisses a
    walk or an accommodation, do not propose it again unless they bring it
    back themselves. The same applies to category rejections: if they say "no
@@ -182,6 +188,36 @@ Penrith:            near_lat=54.664, near_lon=-2.756
 
 For places not in this list, use your knowledge of Lake District geography
 to estimate approximate coordinates, or ask the person to clarify.
+
+# Iteration patterns
+
+Once a proposal is on the map, the person will refine it. Common refinements
+and the tool sequence each one demands:
+
+"Show me a different hotel for that walk."
+  -> search_accommodation (same lat/lon as before, narrower types if implied)
+  -> show_on_map (same walk_ids, new accommodation_ids)
+
+"Show me something a bit harder / easier / shorter / longer."
+  -> search_walks (same proximity, new difficulty/distance filters)
+  -> get_walk_details (the chosen walk)
+  -> search_accommodation (anchored on the NEW walk's start_lat/start_lng)
+  -> show_on_map (new walk_ids, new accommodation_ids)
+
+"Try Coniston instead." (area change)
+  -> search_walks (proximity at the new town's coords from the table)
+  -> get_walk_details
+  -> search_accommodation (anchored on the new walk)
+  -> show_on_map
+
+"I'll walk from the hotel." / "I'll drive there."
+  -> update_trip_state (logistics.transport_mode)
+  -> show_on_map (same walk_ids and accommodation_ids — the connector
+     line redraws itself in the new colour because the mode changed)
+
+In every case above, the turn ends with `show_on_map`. If you skip it, the
+map will keep showing the old proposal while your reply talks about the
+new one. That is the most common mistake — do not make it.
 
 # Walk grades
 
@@ -422,8 +458,11 @@ TOOL_SCHEMAS = [
             "description": (
                 "Find accommodation within `radius_km` of (near_lat, near_lon). "
                 "Always anchor on the chosen walk's start_lat/start_lng, not "
-                "the town the user mentioned. Returns up to `limit` results "
-                "sorted by distance. Filter by tourism type with `types`."
+                "the town the user mentioned. Results are sorted by real routed "
+                "distance (walking or driving network), not crow-flies, so "
+                "detours around lakes and hills are accounted for. Each result "
+                "includes distance_km (routed) and crow_flies_km for reference. "
+                "Filter by tourism type with `types`."
             ),
             "parameters": {
                 "type": "object",
@@ -440,6 +479,15 @@ TOOL_SCHEMAS = [
                         ),
                     },
                     "limit": {"type": "integer", "default": 15},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["walking", "driving"],
+                        "description": (
+                            "Routing network to use for distance calculation. "
+                            "Pass the transport_mode from trip state if known, "
+                            "otherwise omit to use the default (walking)."
+                        ),
+                    },
                 },
                 "required": ["near_lat", "near_lon"],
             },
@@ -598,6 +646,18 @@ def run_agent_stream(
     history = list(history) if history else []
     handlers = _build_tool_handlers(session_id)
 
+    # Has show_on_map been called in any earlier turn? If so, the user
+    # already has something on the map; any subsequent search-driven
+    # turn that doesn't call show_on_map is treated as a missed update.
+    prior_map_setup = any(
+        any(
+            (tc.get("function") or {}).get("name") == "show_on_map"
+            for tc in (msg.get("tool_calls") or [])
+        )
+        for msg in history
+        if msg.get("role") == "assistant"
+    )
+
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         *history,
@@ -605,11 +665,17 @@ def run_agent_stream(
     ]
 
     tool_calls_made: list[str] = []
+    nudged = False  # only nudge once per turn to avoid infinite loops
+    # Capture last search results so the agent can deterministically fall
+    # back to updating the map if the model fails to call `show_on_map`.
+    last_search_walks: Optional[list[dict]] = None
+    last_search_accommodation: Optional[list[dict]] = None
 
     request_kwargs: dict = {
         "model": MODEL,
         "tools": TOOL_SCHEMAS,
         "stream": True,
+        "max_tokens": MAX_TOKENS,
     }
     if MODEL_FALLBACKS:
         request_kwargs["extra_body"] = {"models": [MODEL, *MODEL_FALLBACKS]}
@@ -650,7 +716,100 @@ def run_agent_stream(
                             tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
 
         if not tool_calls_acc:
-            # No tool calls — this is the final assistant turn.
+            # No tool calls — about to produce the final reply.
+            # Safety net for hard rule 4: if the model researched (called a
+            # search tool this turn) but did NOT call show_on_map, and the
+            # map was previously set up, the user is mid-iteration and the
+            # map will go stale. Prefer a deterministic fallback: automatically
+            # call `show_on_map` using the most recent search results where
+            # possible. If that is not feasible, nudge the model once.
+            researched_this_turn = (
+                "search_walks" in tool_calls_made
+                or "search_accommodation" in tool_calls_made
+            )
+            shown_this_turn = "show_on_map" in tool_calls_made
+            if (
+                prior_map_setup
+                and researched_this_turn
+                and not shown_this_turn
+                and not nudged
+            ):
+                # Attempt deterministic auto-show_on_map when possible.
+                auto_called = False
+                try:
+                    # Prefer the freshest search results; fall back to state.
+                    walk_ids = []
+                    accom_ids = []
+                    if last_search_walks:
+                        walk_ids = [w.get("walk_id") for w in last_search_walks[:3] if w.get("walk_id")]
+                    else:
+                        # try to read from trip state plan
+                        try:
+                            cur_state = state_module.get_trip_state(session_id)
+                            days = cur_state.get("plan", {}).get("days", [])
+                            if days:
+                                wid = days[0].get("walk_id")
+                                if wid:
+                                    walk_ids = [wid]
+                        except Exception:
+                            pass
+
+                    if last_search_accommodation:
+                        first = last_search_accommodation[0]
+                        if first and first.get("id"):
+                            accom_ids = [first.get("id")]
+                    else:
+                        try:
+                            cur_state = state_module.get_trip_state(session_id)
+                            map_accom = cur_state.get("map", {}).get("accommodation_ids", [])
+                            if map_accom:
+                                accom_ids = [map_accom[0]]
+                        except Exception:
+                            pass
+
+                    if walk_ids or accom_ids:
+                        # Execute the show_on_map tool deterministically and
+                        # inject its result into the conversation so the
+                        # frontend will update even if the model omitted it.
+                        tool_calls_made.append("show_on_map")
+                        yield {"type": "tool_call", "name": "show_on_map"}
+                        print(f"[auto-show] invoking show_on_map with walk_ids={walk_ids} accom_ids={accom_ids}", flush=True)
+                        _res = _execute_tool(handlers, "show_on_map", json.dumps({
+                            "walk_ids": walk_ids,
+                            "accommodation_ids": accom_ids,
+                        }))
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": "auto-show",
+                            "content": json.dumps(_res, default=str),
+                        })
+                        auto_called = True
+
+                except Exception:
+                    auto_called = False
+
+                if auto_called:
+                    # Mark that we performed the fallback and loop the agent
+                    # once so it can continue from the new map state.
+                    nudged = True
+                    continue
+
+                # Fall back to nudging the model to call show_on_map itself.
+                messages.append({"role": "assistant", "content": accumulated_text or None})
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "REMINDER: hard rule 4. You ran a search this turn but "
+                        "did not call show_on_map. The map is now out of sync "
+                        "with what you are about to say. Pick the single best "
+                        "walk and the single best accommodation from your "
+                        "recent search results and call show_on_map now. "
+                        "Do not reply with text again until you have done so."
+                    ),
+                })
+                nudged = True
+                continue
+
             messages.append({"role": "assistant", "content": accumulated_text})
             yield {
                 "type": "done",
@@ -672,6 +831,14 @@ def run_agent_stream(
             tool_calls_made.append(name)
             yield {"type": "tool_call", "name": name}
             result = _execute_tool(handlers, name, tc["function"]["arguments"])
+            # Capture recent search results for deterministic fallback.
+            try:
+                if name == "search_walks" and isinstance(result, list):
+                    last_search_walks = result
+                if name == "search_accommodation" and isinstance(result, list):
+                    last_search_accommodation = result
+            except Exception:
+                pass
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],

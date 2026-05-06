@@ -163,6 +163,130 @@ def test_search_accommodation_respects_limit():
     print(f"[ok] limit respected: returned {len(results)} of requested 5")
 
 
+# -------- new behaviour: search_walks proximity sorting + distance field --------
+
+def test_search_walks_proximity_includes_distance_field():
+    results = search_walks(
+        near_lat=KESWICK_LAT, near_lon=KESWICK_LON, radius_km=10, limit=20
+    )
+    assert results
+    assert all("distance_from_query_km" in r for r in results), \
+        "every proximity result should expose distance_from_query_km"
+    print(f"[ok] proximity results include distance_from_query_km field")
+
+
+def test_search_walks_proximity_sorted_nearest_first():
+    results = search_walks(
+        near_lat=KESWICK_LAT, near_lon=KESWICK_LON, radius_km=10, limit=20
+    )
+    distances = [r["distance_from_query_km"] for r in results]
+    assert distances == sorted(distances), \
+        f"expected ascending distance order, got {distances}"
+    print(f"[ok] proximity results sorted nearest-first ({len(results)} walks)")
+
+
+def test_search_walks_no_distance_field_without_proximity():
+    # When the model uses non-proximity filters, the distance field should
+    # not appear (it would be misleading without an anchor).
+    results = search_walks(difficulty=["easy"], limit=5)
+    assert results
+    assert not any("distance_from_query_km" in r for r in results)
+    print(f"[ok] non-proximity searches omit distance_from_query_km")
+
+
+# ---- new behaviour: search_accommodation routed distance + crow-flies field ---
+
+def test_search_accommodation_includes_both_distance_fields():
+    results = search_accommodation(
+        near_lat=KESWICK_LAT, near_lon=KESWICK_LON, radius_km=5, limit=10
+    )
+    assert results
+    for r in results:
+        assert "distance_km" in r, "missing distance_km (routed)"
+        assert "crow_flies_km" in r, "missing crow_flies_km"
+    print(f"[ok] accommodation results expose distance_km and crow_flies_km")
+
+
+def test_search_accommodation_routed_at_least_as_far_as_crow_flies():
+    # By geometry, a real route can never be shorter than the straight line.
+    # If routing failed for some entry it falls back to crow-flies (equal).
+    results = search_accommodation(
+        near_lat=KESWICK_LAT, near_lon=KESWICK_LON, radius_km=10, limit=15
+    )
+    assert results
+    for r in results:
+        # Allow small floating-point slack (~50 m) since the graph snaps to
+        # the nearest node which may sit a few metres inside the crow-flies line.
+        assert r["distance_km"] + 0.05 >= r["crow_flies_km"], (
+            f"routed {r['distance_km']} < crow-flies {r['crow_flies_km']} "
+            f"for {r['name']!r}"
+        )
+    print(f"[ok] all routed distances >= crow-flies (geometry sanity check)")
+
+
+def test_search_accommodation_sorted_by_routed_distance():
+    results = search_accommodation(
+        near_lat=KESWICK_LAT, near_lon=KESWICK_LON, radius_km=10, limit=15
+    )
+    distances = [r["distance_km"] for r in results]
+    assert distances == sorted(distances), \
+        f"expected sort by routed distance, got {distances}"
+    print(f"[ok] accommodation sorted by routed distance ({len(results)} entries)")
+
+
+def test_search_accommodation_lake_detour_case():
+    # Hallin Fell trailhead at Martindale Church sits on the east side of
+    # Ullswater. With a 15 km crow-flies radius we should pull in some
+    # accommodation on the west side (Glenridding/Patterdale) where the
+    # routed distance is materially larger than the straight line because
+    # the route has to skirt the lake.
+    HALLIN_FELL_TH_LAT, HALLIN_FELL_TH_LON = 54.5631, -2.8728
+    results = search_accommodation(
+        near_lat=HALLIN_FELL_TH_LAT,
+        near_lon=HALLIN_FELL_TH_LON,
+        radius_km=15,
+        limit=30,
+    )
+    assert results, "expected accommodation around Ullswater"
+    # We expect at least one entry whose routed distance is materially
+    # longer than the crow-flies distance — the lake-detour signature.
+    detours = [r for r in results if r["distance_km"] > r["crow_flies_km"] + 2.0]
+    assert detours, (
+        "expected at least one entry where routed distance exceeds "
+        "crow-flies by >2 km (lake detour) — none found"
+    )
+    worst = max(detours, key=lambda r: r["distance_km"] - r["crow_flies_km"])
+    print(
+        f"[ok] lake detour detected: {worst['name']!r} "
+        f"crow-flies {worst['crow_flies_km']:.1f} km vs routed "
+        f"{worst['distance_km']:.1f} km"
+    )
+
+
+def test_search_accommodation_walking_vs_driving_modes():
+    HALLIN_FELL_TH_LAT, HALLIN_FELL_TH_LON = 54.5631, -2.8728
+    walking = search_accommodation(
+        near_lat=HALLIN_FELL_TH_LAT, near_lon=HALLIN_FELL_TH_LON,
+        radius_km=10, limit=10, mode="walking",
+    )
+    driving = search_accommodation(
+        near_lat=HALLIN_FELL_TH_LAT, near_lon=HALLIN_FELL_TH_LON,
+        radius_km=10, limit=10, mode="driving",
+    )
+    assert walking and driving
+    # Both modes should return results; driving routes are usually a bit
+    # longer because they're constrained to roads, but we don't enforce a
+    # strict inequality (a few entries can tie).
+    walking_by_id = {r["id"]: r["distance_km"] for r in walking}
+    driving_by_id = {r["id"]: r["distance_km"] for r in driving}
+    common = set(walking_by_id) & set(driving_by_id)
+    assert common, "expected overlap between walking and driving result sets"
+    print(
+        f"[ok] both modes return results; "
+        f"{len(common)} entries appear in both (walking/driving)"
+    )
+
+
 if __name__ == "__main__":
     test_search_walks_no_filters_returns_default_limit()
     test_search_walks_difficulty_filter()
@@ -181,4 +305,12 @@ if __name__ == "__main__":
     test_search_accommodation_type_filter()
     test_search_accommodation_osm_id_format()
     test_search_accommodation_respects_limit()
+    test_search_walks_proximity_includes_distance_field()
+    test_search_walks_proximity_sorted_nearest_first()
+    test_search_walks_no_distance_field_without_proximity()
+    test_search_accommodation_includes_both_distance_fields()
+    test_search_accommodation_routed_at_least_as_far_as_crow_flies()
+    test_search_accommodation_sorted_by_routed_distance()
+    test_search_accommodation_lake_detour_case()
+    test_search_accommodation_walking_vs_driving_modes()
     print("\nAll tools tests passed.")
