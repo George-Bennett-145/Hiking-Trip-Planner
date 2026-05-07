@@ -212,8 +212,7 @@ and the tool sequence each one demands:
 
 "I'll walk from the hotel." / "I'll drive there."
   -> update_trip_state (logistics.transport_mode)
-  -> show_on_map (same walk_ids and accommodation_ids — the connector
-     line redraws itself in the new colour because the mode changed)
+  -> show_on_map (same walk_ids and accommodation_ids)
 
 In every case above, the turn ends with `show_on_map`. If you skip it, the
 map will keep showing the old proposal while your reply talks about the
@@ -276,11 +275,8 @@ For a posh or country hotel, look for naming signals like "Country House",
 `tourism = "apartment"`. For hostels, `tourism = "hostel"`. For
 bed-and-breakfast style, `tourism = "guest_house"`.
 
-Most people stay the night before the walk so they are close to the
-trailhead the next morning, not after. If unclear, ask once: "Are you
-staying the night before, or heading there in the morning?" Search within
-roughly 10 km of the trailhead first; if nothing acceptable comes back,
-expand to about 30 km and tell the person why you expanded.
+Search within roughly 10 km of the trailhead first; if nothing acceptable
+comes back, expand to about 30 km and tell the person why you expanded.
 
 # Transport mode (very important, easy to misread)
 
@@ -289,8 +285,8 @@ expand to about 30 km and tell the person why you expanded.
 what kind of hike they want. The whole walk itself is always on foot;
 this field is only about the accommodation-to-trail link.
 
-The map uses it to draw a green dashed line for `walking` or a red
-dashed line for `driving`. If unset, no link is drawn at all.
+It also informs how far away accommodation can sensibly be: walkers want
+something close to the trailhead, drivers can stay further afield.
 
 Set it via `update_trip_state` with `{"logistics": {"transport_mode":
 "walking"}}` (or `"driving"`).
@@ -301,12 +297,11 @@ person plans to **travel on foot from their accommodation to the existing
 trailhead**. They are NOT asking for a different walk. Do not search for
 a new walk. Do not change the `walk_id`. Just call `update_trip_state` to
 set `logistics.transport_mode = "walking"`, then re-call `show_on_map`
-with the same walk and accommodation so the map redraws with the
-walking link.
+with the same walk and accommodation.
 
 Phrases like "I'll drive there", "how do I drive to it", "drive to the
 trailhead" mean `transport_mode = "driving"`. Same rule: keep the same
-walk and accommodation, just update the mode and re-show on the map.
+walk and accommodation, just update the mode.
 
 Default heuristics if the person has not said:
 - Accommodation within ~1.5 km of the trailhead, no driving mention:
@@ -680,6 +675,11 @@ def run_agent_stream(
     if MODEL_FALLBACKS:
         request_kwargs["extra_body"] = {"models": [MODEL, *MODEL_FALLBACKS]}
 
+    # Tracks last char of all text yielded so far across iterations so we can
+    # insert a separating space when a new iteration's text would otherwise
+    # butt directly against the previous iteration's last sentence.
+    last_yielded_char = ""
+
     for _ in range(MAX_AGENT_ITERATIONS):
         request_kwargs["messages"] = messages
         stream = _client.chat.completions.create(**request_kwargs)
@@ -695,8 +695,20 @@ def run_agent_stream(
             delta = chunk.choices[0].delta
 
             if delta.content:
-                accumulated_text += delta.content
-                yield {"type": "text", "delta": delta.content}
+                chunk_text = delta.content
+                # On the first text chunk of a continuation iteration, insert a
+                # space if the previous iteration's text didn't end in whitespace
+                # and this chunk doesn't already start with whitespace.
+                if (
+                    not accumulated_text
+                    and last_yielded_char
+                    and not last_yielded_char.isspace()
+                    and not chunk_text[:1].isspace()
+                ):
+                    chunk_text = " " + chunk_text
+                accumulated_text += chunk_text
+                last_yielded_char = chunk_text[-1]
+                yield {"type": "text", "delta": chunk_text}
 
             if delta.tool_calls:
                 for tc_delta in delta.tool_calls:
@@ -774,10 +786,27 @@ def run_agent_stream(
                         tool_calls_made.append("show_on_map")
                         yield {"type": "tool_call", "name": "show_on_map"}
                         print(f"[auto-show] invoking show_on_map with walk_ids={walk_ids} accom_ids={accom_ids}", flush=True)
-                        _res = _execute_tool(handlers, "show_on_map", json.dumps({
+                        args_json = json.dumps({
                             "walk_ids": walk_ids,
                             "accommodation_ids": accom_ids,
-                        }))
+                        })
+                        _res = _execute_tool(handlers, "show_on_map", args_json)
+                        # Strict providers (Anthropic via Bedrock) reject a
+                        # tool_result whose tool_use_id has no matching tool_use
+                        # in the prior assistant turn, so synthesize that turn
+                        # before appending the result.
+                        messages.append({
+                            "role": "assistant",
+                            "content": accumulated_text or None,
+                            "tool_calls": [{
+                                "id": "auto-show",
+                                "type": "function",
+                                "function": {
+                                    "name": "show_on_map",
+                                    "arguments": args_json,
+                                },
+                            }],
+                        })
                         messages.append({
                             "role": "tool",
                             "tool_call_id": "auto-show",

@@ -171,11 +171,6 @@
             return lines.join('<br>');
         }
 
-        // Connector colour by transport mode. Trail itself stays blue.
-        const _CONNECTOR_STYLE = {
-            walking: { color: '#16a34a', weight: 3, opacity: 0.9, dashArray: '8, 6' },
-            driving: { color: '#dc2626', weight: 3, opacity: 0.9, dashArray: '8, 6' },
-        };
         const _TRAIL_STYLE = { color: '#1d4ed8', weight: 4, opacity: 0.85 };
 
         function _applyLlmMapState(mapState, transportMode) {
@@ -215,68 +210,7 @@
                 hasBounds = true;
             });
 
-            // Connector path: exactly one walk + one accommodation + a known
-            // transport_mode. Anything else falls back to the standalone GPX render.
-            const useConnector = (
-                mapState.walk_ids.length === 1
-                && mapState.accommodation_ids.length === 1
-                && (transportMode === 'walking' || transportMode === 'driving')
-            );
-
-            if (useConnector) {
-                const walkId = mapState.walk_ids[0];
-                const accomId = mapState.accommodation_ids[0];
-                const url = `/api/connector?walk_id=${walkId}`
-                    + `&accommodation_id=${encodeURIComponent(accomId)}`
-                    + `&mode=${transportMode}`;
-                console.log('[map] fetching connector:', url);
-                fetch(url)
-                    .then(async res => {
-                        if (!res.ok) {
-                            const body = await res.text();
-                            console.error('[map] connector fetch failed:', res.status, body);
-                            return null;
-                        }
-                        return res.json();
-                    })
-                    .catch(err => {
-                        console.error('[map] connector network error:', err);
-                        return null;
-                    })
-                    .then(data => {
-                        if (isStale()) return;
-                        if (!data) {
-                            console.warn('[map] no connector data, falling back to plain GPX');
-                            // Fallback so the user at least sees the trail
-                            fetch(`/api/walks/${mapState.walk_ids[0]}/gpx`)
-                                .then(r => r.ok ? r.json() : null)
-                                .then(geojson => {
-                                    if (isStale()) return;
-                                    if (!geojson) return;
-                                    const layer = L.geoJSON(geojson, { style: _TRAIL_STYLE }).addTo(map);
-                                    _llmTrailLayers.push(layer);
-                                    bounds.extend(layer.getBounds());
-                                    if (mapState.fit_bounds) map.fitBounds(bounds, { padding: [40, 40] });
-                                });
-                            return;
-                        }
-                        console.log('[map] connector ok:', data.connector_length_m, 'm connector,',
-                                    data.trail_length_m, 'm trail');
-                        const trailLayer = L.geoJSON(data.trail, { style: _TRAIL_STYLE }).addTo(map);
-                        _llmTrailLayers.push(trailLayer);
-                        bounds.extend(trailLayer.getBounds());
-
-                        const connectorLayer = L.geoJSON(data.connector, {
-                            style: _CONNECTOR_STYLE[transportMode],
-                        }).addTo(map);
-                        _llmTrailLayers.push(connectorLayer);
-                        bounds.extend(connectorLayer.getBounds());
-
-                        if (mapState.fit_bounds) {
-                            map.fitBounds(bounds, { padding: [40, 40] });
-                        }
-                    });
-            } else if (mapState.walk_ids.length) {
+            if (mapState.walk_ids.length) {
                 console.log('[map] fallback GPX render for walks:', mapState.walk_ids,
                             '(transport_mode is', transportMode, ')');
                 Promise.all(

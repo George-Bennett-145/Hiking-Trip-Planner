@@ -30,7 +30,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from server import connector as connector_module
 from server import data as data_module
 from server import gpx as gpx_module
 from server import llm as llm_module
@@ -42,10 +41,10 @@ _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Pre-load the routing graphs so the first /api/connector request does
-    # not pay the ~8s walking-graph load cost. If they're missing (graphs
-    # not built yet) we log and continue: the connector endpoint will then
-    # surface the FileNotFoundError on demand instead of crashing startup.
+    # Pre-load the routing graphs at startup so accommodation distance
+    # calculations don't pay the ~8s walking-graph load cost on the first
+    # tool call. Missing graph files are logged and skipped so the rest of
+    # the app still starts.
     print("[startup] warming routing graphs...")
     t0 = time.perf_counter()
     try:
@@ -54,7 +53,7 @@ async def lifespan(_: FastAPI):
     except FileNotFoundError as e:
         print(f"[startup] graph warm skipped: {e}")
     except Exception as e:
-        print(f"[startup] graph warm failed (connector will be slow): {e}")
+        print(f"[startup] graph warm failed: {e}")
     yield
 
 
@@ -173,58 +172,6 @@ def get_walks():
 @app.get("/api/accommodation")
 def get_accommodation():
     return data_module.load_accommodation()
-
-
-@app.get("/api/connector")
-def get_connector(walk_id: int, accommodation_id: str, mode: str = "walking"):
-    """Connector from an accommodation to its trail join point.
-
-    `mode` selects the routing network:
-      walking - footpaths/bridleways/walkable roads, circular trails are
-                rotated to start at the nearest point on the loop.
-      driving - drivable roads only, circular trails keep their canonical
-                start (assumes the user parks at the official trailhead).
-
-    All polylines are GeoJSON Features with [lng, lat] coordinate order
-    to match /api/walks/{id}/gpx.
-    """
-    if mode not in ("walking", "driving"):
-        raise HTTPException(status_code=400, detail=f"mode must be 'walking' or 'driving', got {mode!r}")
-
-    accom = next(
-        (a for a in data_module.load_accommodation() if a["osm_id"] == accommodation_id),
-        None,
-    )
-    if accom is None:
-        raise HTTPException(status_code=404, detail=f"No accommodation with id={accommodation_id}")
-    if accom.get("lat") is None or accom.get("lon") is None:
-        raise HTTPException(status_code=400, detail=f"Accommodation {accommodation_id} has no coordinates")
-
-    try:
-        payload = connector_module.build_connector(walk_id, accom["lat"], accom["lon"], mode=mode)
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-    def _as_linestring(latlon_pairs):
-        return {
-            "type": "Feature",
-            "geometry": {
-                "type": "LineString",
-                "coordinates": [[lon, lat] for lat, lon in latlon_pairs],
-            },
-        }
-
-    return {
-        "walk_id": payload["walk_id"],
-        "accommodation_id": accommodation_id,
-        "mode": payload["mode"],
-        "is_circular": payload["is_circular"],
-        "join": [payload["join_lon"], payload["join_lat"]],
-        "connector_length_m": round(payload["connector_length_m"], 1),
-        "trail_length_m": round(payload["trail_length_m"], 1),
-        "connector": _as_linestring(payload["connector"]),
-        "trail": _as_linestring(payload["trail"]),
-    }
 
 
 @app.get("/api/walks/{walk_id}/gpx")

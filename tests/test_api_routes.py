@@ -150,90 +150,6 @@ def test_gpx_route_404_for_unknown_walk():
     print("[ok] /api/walks/{id}/gpx returns 404 for unknown walk_id")
 
 
-# -------- connector route (today's main feature) --------
-
-def _first_accommodation_near_walk(walk_id: int, max_distance_km: float = 5.0) -> str:
-    """Helper: pick a real accommodation osm_id near the walk's start point."""
-    walks = client.get("/api/walks").json()
-    walk = next(w for w in walks if w["walk_id"] == walk_id)
-    accom = client.get("/api/accommodation").json()
-    # Crow-flies pick is fine for the test fixture.
-    import math
-    def km(a_lat, a_lon, b_lat, b_lon):
-        R = 6371
-        from math import radians, sin, cos, asin, sqrt
-        la, lb = radians(a_lat), radians(b_lat)
-        d_la = radians(b_lat - a_lat)
-        d_lo = radians(b_lon - a_lon)
-        h = sin(d_la / 2) ** 2 + cos(la) * cos(lb) * sin(d_lo / 2) ** 2
-        return 2 * R * asin(sqrt(h))
-    near = [
-        a for a in accom
-        if a.get("lat") is not None
-        and km(walk["start_lat"], walk["start_lng"], a["lat"], a["lon"]) <= max_distance_km
-    ]
-    assert near, f"no accommodation within {max_distance_km}km of walk {walk_id}"
-    return near[0]["osm_id"]
-
-
-def test_connector_walking_mode():
-    accom_id = _first_accommodation_near_walk(2036)
-    r = client.get(f"/api/connector?walk_id=2036&accommodation_id={accom_id}&mode=walking")
-    assert r.status_code == 200, r.text
-    payload = r.json()
-    assert payload["mode"] == "walking"
-    assert payload["walk_id"] == 2036
-    assert payload["accommodation_id"] == accom_id
-    assert payload["connector"]["geometry"]["type"] == "LineString"
-    assert payload["trail"]["geometry"]["type"] == "LineString"
-    assert payload["connector_length_m"] > 0
-    assert payload["trail_length_m"] > 0
-    assert isinstance(payload["is_circular"], bool)
-    print(
-        f"[ok] /api/connector walking: connector "
-        f"{payload['connector_length_m']:.0f} m, trail "
-        f"{payload['trail_length_m']:.0f} m, circular={payload['is_circular']}"
-    )
-
-
-def test_connector_driving_mode():
-    accom_id = _first_accommodation_near_walk(2036)
-    r = client.get(f"/api/connector?walk_id=2036&accommodation_id={accom_id}&mode=driving")
-    assert r.status_code == 200, r.text
-    payload = r.json()
-    assert payload["mode"] == "driving"
-    assert payload["connector"]["geometry"]["type"] == "LineString"
-    print(f"[ok] /api/connector driving: connector {payload['connector_length_m']:.0f} m")
-
-
-def test_connector_rejects_invalid_mode():
-    accom_id = _first_accommodation_near_walk(2036)
-    r = client.get(f"/api/connector?walk_id=2036&accommodation_id={accom_id}&mode=teleport")
-    assert r.status_code == 400
-    assert "mode must be" in r.json()["detail"]
-    print("[ok] /api/connector returns 400 for invalid mode")
-
-
-def test_connector_404_for_unknown_accommodation():
-    r = client.get("/api/connector?walk_id=2036&accommodation_id=node/0000000")
-    assert r.status_code == 404
-    assert "No accommodation" in r.json()["detail"]
-    print("[ok] /api/connector returns 404 for unknown accommodation_id")
-
-
-def test_connector_coordinates_are_lng_lat():
-    accom_id = _first_accommodation_near_walk(2036)
-    r = client.get(f"/api/connector?walk_id=2036&accommodation_id={accom_id}&mode=walking")
-    payload = r.json()
-    # GeoJSON convention is [lng, lat]; both coordinate sets must agree with /api/walks/{id}/gpx
-    for feature in (payload["connector"], payload["trail"]):
-        first = feature["geometry"]["coordinates"][0]
-        lng, lat = first
-        assert -3.5 < lng < -2.5, f"connector/trail lng {lng} out of range (lng/lat swap?)"
-        assert 54.3 < lat < 54.8, f"connector/trail lat {lat} out of range"
-    print("[ok] /api/connector coordinates are [lng, lat] in Lake District range")
-
-
 if __name__ == "__main__":
     test_healthz_returns_ok()
     test_chat_rejects_empty_message()
@@ -248,9 +164,4 @@ if __name__ == "__main__":
     test_accommodation_route_shape()
     test_gpx_route_returns_geojson_linestring()
     test_gpx_route_404_for_unknown_walk()
-    test_connector_walking_mode()
-    test_connector_driving_mode()
-    test_connector_rejects_invalid_mode()
-    test_connector_404_for_unknown_accommodation()
-    test_connector_coordinates_are_lng_lat()
     print("\nAll API route tests passed.")
