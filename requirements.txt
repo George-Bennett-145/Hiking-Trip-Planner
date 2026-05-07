@@ -11,8 +11,10 @@ rapidfuzz
 
 # Routing: OSM-based shortest-path between accommodation and trailhead.
 # osmnx pulls in networkx, geopandas, shapely as transitive deps.
+# scikit-learn is needed by osmnx for nearest-node lookup on unprojected graphs.
 osmnx
 networkx
+scikit-learn
 
 # Env var loading
 python-dotenv

@@ -204,6 +204,9 @@ def get_connector(walk_id: int, accommodation_id: str, mode: str = "walking"):
         payload = connector_module.build_connector(walk_id, accom["lat"], accom["lon"], mode=mode)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"[connector] build_connector failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Routing failed: {type(e).__name__}: {e}")
 
     def _as_linestring(latlon_pairs):
         return {

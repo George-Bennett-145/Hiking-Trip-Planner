@@ -319,7 +319,7 @@
                 .then(res => res.json())
                 .then(state => {
                     const m = state.map;
-                    const transportMode = state.logistics?.transport_mode || null;
+                    const transportMode = state.logistics?.transport_mode || 'walking';
                     // Ignore empty state - happens when the server restarts and
                     // loses session memory. Don't clear a map that already has content.
                     if (!m.walk_ids.length && !m.accommodation_ids.length) return;
